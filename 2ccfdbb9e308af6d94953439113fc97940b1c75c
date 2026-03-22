@@ -1,0 +1,23 @@
+README.md
+  add749bdde899bde 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.17",
+  "base_commit_sha": "2ccfdbb9e308af6d94953439113fc97940b1c75c",
+  "prompts": {
+    "add749bdde899bde": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b32dc3b6-441e-4f10-8ade-8d35dd5ef9f4",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "ziv-codefresh <ziv@codefresh.io>",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 1,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  }
+}

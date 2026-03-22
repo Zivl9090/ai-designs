@@ -1,7 +1,7 @@
 ---
 ticketId: ENG-6
 ticketTitle: "Too much repeated code : Using a validation library like Joi or Zod can indeed help improve code readability and provide a DRY code structure"
-status: draft
+status: approved
 createdAt: 2026-03-22T16:31:32.066Z
 ---
 

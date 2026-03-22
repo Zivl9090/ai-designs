@@ -1,20 +1,24 @@
 ---
 ticketId: ENG-6
 ticketTitle: "Too much repeated code : Using a validation library like Joi or Zod can indeed help improve code readability and provide a DRY code structure"
-status: approved
-createdAt: 2026-03-22T16:43:33.414Z
+status: draft
+createdAt: 2026-03-22T17:01:04.688Z
 ---
 
 > Selected repository: `Zivl9090/node-express-realworld-example-app`
-> Reasoning: This Node.js + Express backend repository contains the validation code shown in the ticket that needs refactoring to use Joi/Zod instead of manual validation checks.
+> Reasoning: This is a Node.js/Express backend repository that contains the validation code shown in the ticket (Joi validation for password updates and field validation), making it the direct target for refactoring to use a validation library like Zod.
 
 ## What to do
 
-Introduce **Joi** as the validation library and centralize all request validation behind a reusable `validate` middleware. Replace the inline field-by-field checks in user-related route handlers with Joi schemas. All validation errors must continue to emit `{ errors: { field: ["message"] } }` with status 422.
+Introduce **Joi** as the validation library and replace all manual field-checking in the user routes with a shared `validate` middleware. Joi is already referenced in the ticket example and fits Express middleware patterns naturally.
+
+---
 
 ## Changes
 
-### 1. Install Joi
+### 1. `package.json`
+
+Add `joi` as a dependency.
 
 ```bash
 npm install joi
@@ -24,17 +28,18 @@ npm install joi
 
 ### 2. New file: `src/middleware/validate.js`
 
-Express middleware factory that takes a Joi schema, validates `req.body`, and forwards a 422 error in the existing error shape if validation fails.
+Purpose: generic Express middleware factory that validates `req.body` against a Joi schema and throws a 422 in the RealWorld error shape if validation fails.
 
 ```js
 const validate = (schema) => (req, res, next) => {
   const { error, value } = schema.validate(req.body, {
     abortEarly: false,   // collect all errors, not just the first
-    stripUnknown: true,  // drop fields not in schema
+    allowUnknown: true,  // don't reject fields not in the schema
+    stripUnknown: false,
   });
 
   if (!error) {
-    req.body = value;    // replace body with coerced/trimmed values
+    req.body = value;    // use the coerced/trimmed values
     return next();
   }
 
@@ -55,100 +60,81 @@ module.exports = validate;
 
 ### 3. New file: `src/middleware/schemas/user.schemas.js`
 
-Joi schemas for every user-facing body payload. Keep them in one place so routes just import what they need.
+Purpose: Joi schemas that mirror the existing manual checks in user-related route handlers.
 
 ```js
 const Joi = require('joi');
 
 const register = Joi.object({
-  user: Joi.object({
-    email: Joi.string().email().trim().required().messages({
-      'string.empty': "can't be blank",
-      'any.required': "can't be blank",
-      'string.email': 'is invalid',
-    }),
-    username: Joi.string().trim().required().messages({
-      'string.empty': "can't be blank",
-      'any.required': "can't be blank",
-    }),
-    password: Joi.string().min(8).required().messages({
-      'string.empty': "can't be blank",
-      'any.required': "can't be blank",
-      'string.min': 'is too short (minimum 8 characters)',
-    }),
-  }).required(),
-});
+  email:    Joi.string().trim().email().required()
+              .messages({ 'any.required': "can't be blank", 'string.empty': "can't be blank" }),
+  username: Joi.string().trim().required()
+              .messages({ 'any.required': "can't be blank", 'string.empty': "can't be blank" }),
+  password: Joi.string().trim().required()
+              .messages({ 'any.required': "can't be blank", 'string.empty': "can't be blank" }),
+}).unknown(true);
 
 const login = Joi.object({
-  user: Joi.object({
-    email: Joi.string().email().trim().required().messages({
-      'string.empty': "can't be blank",
-      'any.required': "can't be blank",
-      'string.email': 'is invalid',
-    }),
-    password: Joi.string().required().messages({
-      'string.empty': "can't be blank",
-      'any.required': "can't be blank",
-    }),
-  }).required(),
-});
+  email:    Joi.string().trim().email().required()
+              .messages({ 'any.required': "can't be blank", 'string.empty': "can't be blank" }),
+  password: Joi.string().trim().required()
+              .messages({ 'any.required': "can't be blank", 'string.empty': "can't be blank" }),
+}).unknown(true);
 
 const update = Joi.object({
-  user: Joi.object({
-    email: Joi.string().email().trim().messages({ 'string.email': 'is invalid' }),
-    username: Joi.string().trim(),
-    password: Joi.string().min(8).messages({
-      'string.min': 'is too short (minimum 8 characters)',
-    }),
-    image: Joi.string().uri().allow('', null),
-    bio: Joi.string().allow('', null),
-  }).required(),
-});
+  email:    Joi.string().trim().email(),
+  username: Joi.string().trim(),
+  password: Joi.string().trim(),
+  image:    Joi.string().allow('', null),
+  bio:      Joi.string().allow('', null),
+}).unknown(true);
 
 module.exports = { register, login, update };
 ```
 
-> Adjust minimum password length or other constraints to match whatever the existing code enforces — the above uses 8 as a sensible default. If the current code has no minimum, remove `min(8)`.
-
 ---
 
-### 4. Modify `src/routes/api/users.js`
+### 4. `src/routes/api/users.js`
 
-Remove all manual `if (!email)` / `if (!username)` / `if (!password)` checks and `.trim()` calls. Wire the `validate` middleware and schemas onto the three affected routes.
+**What to change:**
 
-**POST /users** (registration):
+1. Import `validate` and the `user.schemas`.
+2. Add `validate(schemas.register)` as middleware on `POST /users` before the handler.
+3. Add `validate(schemas.login)` as middleware on `POST /users/login` before the handler.
+4. Add `validate(schemas.update)` as middleware on `PUT /user` before the handler.
+5. **Remove** the manual `if (!email)` / `if (!username)` / `if (!password)` blocks and the corresponding `trim()` calls from inside the handlers — Joi's coercion via `stripUnknown: false` + `trim()` in schema means `req.body` already has clean values after the middleware runs.
+
+Example before/after for the register handler:
+
 ```js
-router.post('/users', validate(userSchemas.register), async (req, res, next) => { … });
+// BEFORE
+router.post('/users', async (req, res, next) => {
+  const email    = req.body.user?.email?.trim();
+  const username = req.body.user?.username?.trim();
+  const password = req.body.user?.password?.trim();
+  if (!email)    throw new HttpException(422, { errors: { email:    ["can't be blank"] } });
+  if (!username) throw new HttpException(422, { errors: { username: ["can't be blank"] } });
+  if (!password) throw new HttpException(422, { errors: { password: ["can't be blank"] } });
+  ...
+});
+
+// AFTER
+router.post('/users', validate(schemas.register), async (req, res, next) => {
+  const { email, username, password } = req.body.user ?? req.body;
+  ...
+});
 ```
 
-**POST /users/login**:
-```js
-router.post('/users/login', validate(userSchemas.login), async (req, res, next) => { … });
-```
-
-**PUT /user** (update, already behind `auth.required`):
-```js
-router.put('/user', auth.required, validate(userSchemas.update), async (req, res, next) => { … });
-```
-
-Inside each handler, `req.body.user` is already validated and trimmed — delete the redundant destructuring-and-check blocks. Keep all logic that calls Mongoose / builds the response unchanged.
-
-Imports to add at the top of `users.js`:
-```js
-const validate = require('../../middleware/validate');
-const userSchemas = require('../../middleware/schemas/user.schemas');
-```
+> Adjust the destructuring path (`req.body.user` vs `req.body`) to match whatever the actual handlers use — inspect the existing code before removing anything.
 
 ---
 
 ## Gotchas
 
-- **Nested body shape**: the RealWorld spec wraps payloads in `{ user: { … } }`. The Joi schemas above reflect this. The `validate` middleware validates `req.body`, so the top-level schema key must be `user`. Inside handlers, field access stays `req.body.user.email`.
-- **Error message format**: existing tests likely assert `{ errors: { email: ["can't be blank"] } }`. Joi's default messages include quotes around field names — the `replace(/['"]/g, '')` in the middleware strips them. Verify test assertions still pass.
-- **`stripUnknown`**: setting this strips `demo` or other unknown fields automatically; no need to handle them explicitly in the handler.
-- **`update` route fields are all optional**: Joi `.required()` should NOT be added to `update` schema fields — a partial update sending only `bio` is valid.
-- **Do not change `routes/auth.js`** or the User/Article/Comment Mongoose models.
-- **Other routes** (articles, comments, profiles) are out of scope for this ticket. Don't add Joi schemas for them unless the ticket is expanded.
+- **RealWorld wraps inputs in a `user` key** (`{ "user": { "email": "...", ... } }`). Check whether the existing handlers destructure from `req.body.user` or `req.body` directly. If it's `req.body.user`, pass `req.body.user` into `validate` or adjust the middleware to unwrap it: `schema.validate(req.body.user ?? req.body, ...)`. Pick one convention and be consistent.
+- **Error message format must match exactly.** Existing tests likely assert `{ errors: { email: ["can't be blank"] } }`. The `.messages()` calls on each field must produce that exact string. Run the test suite after wiring up to verify.
+- **Do not touch `models/User.js`** — Mongoose-level validation is separate and should stay unchanged.
+- **`allowUnknown: true`** is intentional — the RealWorld body may include fields the schema doesn't enumerate (e.g. `demo`, `image`, `bio` on register), and rejecting unknown fields would break the API contract.
 
 ---
 **To approve:** apply the `ai-implement` label.

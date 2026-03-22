@@ -1,7 +1,7 @@
 ---
 ticketId: ENG-5
 ticketTitle: "eact-redux-realworld-example-app"
-status: draft
+status: approved
 createdAt: 2026-03-22T14:12:18.060Z
 ---
 

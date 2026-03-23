@@ -1,167 +1,106 @@
 ---
 ticketId: ENG-6
 ticketTitle: "Too much repeated code : Using a validation library like Joi or Zod can indeed help improve code readability and provide a DRY code structure"
-status: approved
-createdAt: 2026-03-22T17:07:36.773Z
+status: draft
+createdAt: 2026-03-23T07:11:15.243Z
 ---
 
 > Selected repository: `Zivl9090/node-express-realworld-example-app`
-> Reasoning: This Node.js/Express backend repository contains the validation code shown in the ticket (Joi schemas and manual validation checks) that needs to be refactored to use a validation library consistently.
+> Reasoning: This Node.js/Express backend repository contains the validation logic shown in the ticket that needs refactoring to use Joi or Zod for DRY code structure.
 
 ## What to do
 
-Introduce **Joi** as the validation library and centralise all request-body validation behind a single `validate` middleware. Replace the manual field-by-field checks in the user and article routes with Joi schemas. The error shape must stay `{ errors: { field: ["message"] } }` with status 422.
+Introduce **Joi** for request validation and centralize it in a `validate` middleware. Replace the manual field-checking pattern in `routes/api/users.js` (and any other routes doing the same thing) with declarative schemas. This keeps error shape consistent with the existing `{ errors: { field: [messages] } }` contract.
 
 ---
 
 ## Changes
 
-### 1. Install dependency
+### 1. `src/middleware/validate.js` — **new file**
 
-```bash
-npm install joi
-```
-
----
-
-### 2. New file: `src/middleware/validate.js`
-
-A generic Express middleware factory that takes a Joi schema, validates `req.body`, and throws/returns a 422 in the existing error shape on failure.
+A reusable Express middleware factory. Takes a Joi schema and validates `req.body` against it. On failure, transforms Joi's error output into the app's existing error shape and throws (or calls `next`) with status 422.
 
 ```js
-const validate = (schema) => (req, res, next) => {
-  const { error } = schema.validate(req.body, { abortEarly: false });
-  if (!error) return next();
-
-  const errors = {};
-  error.details.forEach(({ path, message }) => {
-    const field = path[0];
-    errors[field] = [message.replace(/['"]/g, '')];
-  });
-  return res.status(422).json({ errors });
-};
-
-module.exports = validate;
+// Public interface:
+module.exports = (schema) => (req, res, next) => { ... }
 ```
 
-- `abortEarly: false` collects all failures at once.
-- `path[0]` maps to the top-level field name, matching the existing error shape.
+Transformation logic:
+
+- Iterate `error.details`
+- Each detail has `context.key` (field name) and `message` (string)
+- Strip Joi's surrounding quotes from messages
+- Build `{ errors: { [key]: [message] } }` and return `res.status(422).json(...)`
+
+Use `schema.validate(req.body, { abortEarly: false })` so all field errors surface at once, not just the first.
 
 ---
 
-### 3. New file: `src/middleware/schemas.js`
+### 2. `src/validators/user.js` — **new file**
 
-All Joi schemas live here. Define one object per request type.
+Joi schemas for user-related routes.
 
 ```js
 const Joi = require('joi');
 
-const userRegistration = Joi.object({
+const register = Joi.object({
   user: Joi.object({
-    email: Joi.string().email().trim().required(),
+    email: Joi.string().trim().required(),
     username: Joi.string().trim().required(),
     password: Joi.string().trim().required(),
   }).required(),
 });
 
-const userLogin = Joi.object({
+const login = Joi.object({
   user: Joi.object({
     email: Joi.string().trim().required(),
     password: Joi.string().trim().required(),
   }).required(),
 });
 
-const userUpdate = Joi.object({
+const update = Joi.object({
   user: Joi.object({
-    email: Joi.string().email().trim(),
+    email: Joi.string().trim(),
     username: Joi.string().trim(),
     password: Joi.string().trim(),
-    image: Joi.string().uri().allow('', null),
+    image: Joi.string().allow('', null),
     bio: Joi.string().allow('', null),
-  }).min(1),
+  }).min(1).required(),
 });
 
-const articleCreate = Joi.object({
-  article: Joi.object({
-    title: Joi.string().required(),
-    description: Joi.string().required(),
-    body: Joi.string().required(),
-    tagList: Joi.array().items(Joi.string()),
-  }).required(),
-});
-
-const articleUpdate = Joi.object({
-  article: Joi.object({
-    title: Joi.string(),
-    description: Joi.string(),
-    body: Joi.string(),
-    tagList: Joi.array().items(Joi.string()),
-  }).min(1),
-});
-
-const commentCreate = Joi.object({
-  comment: Joi.object({
-    body: Joi.string().required(),
-  }).required(),
-});
-
-module.exports = {
-  userRegistration,
-  userLogin,
-  userUpdate,
-  articleCreate,
-  articleUpdate,
-  commentCreate,
-};
+module.exports = { register, login, update };
 ```
 
----
-
-### 4. `src/routes/api/users.js`
-
-- Import `validate` and the schemas.
-- Add `validate(schemas.userRegistration)` before the `POST /users` handler body.
-- Add `validate(schemas.userLogin)` before the `POST /users/login` handler body.
-- Add `validate(schemas.userUpdate)` before the `PUT /user` handler body.
-- **Remove** all manual `if (!email)`, `if (!username)`, `if (!password)` checks and the corresponding `.trim()` assignments — Joi handles trimming and presence.
-
-Route wiring example:
-
-```js
-const validate = require('../../middleware/validate');
-const schemas = require('../../middleware/schemas');
-
-router.post('/users', validate(schemas.userRegistration), async (req, res, next) => { ... });
-router.post('/users/login', validate(schemas.userLogin), async (req, res, next) => { ... });
-router.put('/user', auth.required, validate(schemas.userUpdate), async (req, res, next) => { ... });
-```
-
-Inside the handlers, read from `req.body.user` as before — Joi validation doesn't reshape the object.
+Note the nested `user:` wrapper — confirm against the actual request body shape in `routes/api/users.js` before finalising. The RealWorld spec wraps all user payloads in a `user` key.
 
 ---
 
-### 5. `src/routes/api/articles.js`
+### 3. `routes/api/users.js` — **modify**
 
-- Add `validate(schemas.articleCreate)` before the `POST /articles` handler.
-- Add `validate(schemas.articleUpdate)` before the `PUT /articles/:slug` handler.
-- Remove any manual required-field checks for `title`, `description`, `body`.
+- `npm install joi` first.
+- Import `validate` middleware and `userValidators`.
+- On the `POST /users` (register) route: add `validate(userValidators.register)` before the handler. Remove the manual `if (!email)` / `if (!username)` / `if (!password)` block and the `.trim()` calls — Joi handles both.
+- On the `POST /users/login` route: add `validate(userValidators.login)`.
+- On the `PUT /user` route: add `validate(userValidators.update)`.
+
+The handler bodies should shrink to just the business logic (hash password, create user, sign JWT, etc.).
 
 ---
 
-### 6. `src/routes/api/comments.js`
+### 4. `src/validators/article.js` — **new file** (if articles route has same pattern)
 
-- Add `validate(schemas.commentCreate)` before the `POST /articles/:slug/comments` handler.
-- Remove any manual check for `body` being blank.
+If `routes/api/articles.js` contains similar manual blank-checks, add an article schema here. Check the file — if it does, same treatment: schema + `validate` middleware on create/update routes.
 
 ---
 
 ## Gotchas
 
-- **Nested body shape**: The API wraps payloads — `{ user: { email, ... } }`, `{ article: { ... } }`, `{ comment: { ... } }`. The Joi schemas must mirror this nesting, and the validate middleware must validate `req.body` (the whole envelope), not `req.body.user`. If you validate only the inner object, the outer wrapper is unchecked.
-- **Error path for nested objects**: With the nested shape, `error.details[].path` will be `['user', 'email']` not `['email']`. Change the middleware's path extraction to `path[path.length - 1]` (the leaf field name) so the error response stays `{ errors: { email: [...] } }`.
-- **Trimming side-effect**: The existing code does `input.email?.trim()` before using the value. Joi's `.trim()` modifier validates the trimmed value but does **not** mutate `req.body`. Either keep one explicit `.trim()` in the handler before DB calls, or set `convert: true` in `schema.validate(req.body, { abortEarly: false, convert: true })` — `convert: true` is Joi's default so trimming will mutate the validated value only if you use the returned `value` object. Switch handlers to use the `value` returned by Joi if you want auto-trimming; otherwise keep the `.trim()` calls in the handler. The simplest fix: use the `value` from the middleware by attaching it — `req.body = value` — before calling `next()`.
-- **Do not change the User or Article Mongoose models** — this refactor is purely at the route/middleware layer.
-- **Existing tests** validate the 422 error shape — run `npm test` after changes to confirm the shape hasn't drifted.
+- **Error message format**: Joi default messages look like `"email" is not allowed to be empty`. Strip the surrounding quotes and ensure the message matches what tests expect. If existing tests assert on specific strings, check them before changing message text — or just assert on status code + field key presence.
+- **Nested body shape**: RealWorld wraps bodies as `{ user: { ... } }` and `{ article: { ... } }`. Your Joi schema must mirror this nesting exactly, or validation will always fail.
+- **`.trim()` side effect**: The existing code trims and then uses the trimmed value. Joi's `.trim()` modifier mutates the validated value — use `const { error, value } = schema.validate(req.body, ...)` and replace `req.body` with `value` in the middleware so trimmed values flow into the handler.
+- **`abortEarly: false`**: Without this, only the first error is returned. Add it so multi-field errors work like the existing per-field error shape implies.
+- **Do not change the User or Article Mongoose models** — this refactor is purely in the route/middleware layer.
+- **Install Joi**: `npm install joi` — add to `package.json` dependencies, not devDependencies.
 
 ---
 **To approve:** apply the `ai-implement` label.
